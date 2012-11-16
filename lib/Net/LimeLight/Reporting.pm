@@ -1,7 +1,8 @@
 package Net::LimeLight::Reporting;
 
-use warnings;
 use strict;
+use warnings;
+use Carp;
 
 use DateTime::Format::ISO8601;
 use Moose;
@@ -96,20 +97,6 @@ has '_date_parser' => (
     }
 );
 
-has '_soap' => (
-    is => 'rw',
-    isa => 'SOAP::Lite',
-    lazy => 1,
-    default => sub {
-        my ($self) = @_;
-        return SOAP::Lite->new(
-            proxy => $self->proxy,
-            uri => $self->uri,
-            attr => { 'xmlns:tns' => "http://www.llnw.com/Reporting" },
-        );
-    }
-);
-
 =head2 error
 
 Recent fault of SOAP access
@@ -180,6 +167,18 @@ has 'uri' => (
     default => sub { 'http://www.llnw.com/Reporting' }
 );
 
+=head2 wsdl
+
+WSDL uri
+
+=cut
+
+has 'wsdl' => (
+    is => 'rw',
+    isa => 'Str',
+    default => sub { 'http://soap.llnw.net/ReportingService/Service.asmx?WSDL' }
+);
+
 no Moose;
 
 =head2 debug([enable])
@@ -216,6 +215,67 @@ sub debug {
     }
 }
 
+=head2 error_message
+
+=cut
+
+sub error_message {
+    my $e = (shift)->error;
+    return '' unless $e;
+    sprintf "SOAP RPC Error(%s): %s, %s", $e->{code}, $e->{message}, $e->{detail};
+}
+
+=head2 _soap
+
+SOAP accessor object (for internal use)
+
+=cut
+
+sub _soap {
+    my ($self, %args) = @_;
+
+    my $soap = SOAP::Lite->new(
+        service => $self->wsdl,
+        proxy => $self->proxy,
+        uri => $self->uri,
+        soapversion => '1.2',
+        envprefix => 'soap12',
+        #   attr => { 'xmlns:tns' => $self->uri },
+    );
+    $soap->ns('http://www.llnw.com/Reporting/encodedTypes', 'types');
+    $soap->ns('http://www.llnw.com/Reporting', 'tns'); # later namespace is default namespace of method...
+    if ($args{method}) {
+        $soap->on_action(sub { $self->uri . '/' . $args{method} });
+    }
+    $soap;
+}
+
+=head2 rpc
+
+LimeLight SOAP rpc shortcut
+
+=cut
+
+sub rpc {
+    my ($self, $method, @args) = @_;
+    $self->error(undef);
+    my $soap = $self->_soap(method => $method);
+
+    my $methodobj = SOAP::Data->name('tns:' . $method)->prefix('tns');
+    my $res;
+    if ($method eq 'getAccess') {
+        $res = $soap->call($methodobj, @args);
+    } else {
+        $res = $soap->call($methodobj, $self->access, @args);
+    }
+    if ($res->fault) {
+        my $f = $res->fault;
+        $self->error({code => $f->{Code}->{Value}, message => $f->{Reason}->{Text}, detail => $f->{Detail}});
+        return undef;
+    }
+    $res;
+}
+
 =head2 auth
 
 Authenticate and get access token for RPC
@@ -224,33 +284,39 @@ Authenticate and get access token for RPC
 
 sub auth {
     my $self = shift;
-    $self->error(undef);
-
-    my $soap = $self->_soap;
-    $soap->on_action(sub { '"' . $self->uri . '/getAccess' . '"' });
-    $soap->ns('http://www.llnw.com/Reporting', 'tns');
-
-    my $res = $soap->call(
-        SOAP::Data->new(
-            name => 'getAccess',
-        )->prefix('tns') => (
-            SOAP::Data->new(name => 'username', value => $self->username),
-            SOAP::Data->new(name => 'password', value => $self->password),
-        )
-    );
-    if ($res->fault) {
-        $self->fault({code => $res->faultcode, message => $res->faultstring, detail => $res->faultdetail});
+    my $res = $self->rpc('getAccess', (
+        SOAP::Data->new(name => 'username', value => $self->username),
+        SOAP::Data->new(name => 'password', value => $self->password),
+    ));
+    unless ($res) {
+        carp $self->error_message();
         return undef;
     }
-    $self->access( $res->valueof('//getAccessResult') );
+    my $access = $res->valueof('//getAccessResult');
+    my $accessobj = SOAP::Data->name('userAccess' => \SOAP::Data->value(
+        map { SOAP::Data->name($_ => $access->{$_})->type('string'); } keys(%$access)
+    ))->type('types:SOAPAccess');
+    $self->access( $accessobj );
+
     $self->access;
 }
 
 =head2 reports
 
+Get reports list and returns as arrayref
+
 =cut
 
 sub reports {
+    my $self = shift;
+
+    my $res = $self->rpc('getAvailableReports');
+    unless ($res) {
+        carp $self->error_message;
+        return undef;
+    }
+    #TODO return [] if blank ('')
+    $res->valueof( '//getAvailableReportsResult' );
 }
 
 =head2 categories($report)
