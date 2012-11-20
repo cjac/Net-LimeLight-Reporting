@@ -59,7 +59,7 @@ our $VERSION = '0.01';
   # * getDiskUsage
   #     This method returns the raw disk usage 5-minute sample data for a specific time range.
   #     The sample data is returned in a SOAPNetworkUsage strcuture.
-  $client->disk_usage();
+  $client->disk_usage($reports->[0], $ranges->[0]);
 
   # * getNetworkUsageSections
   #     This method returns the network usage sections available for a report.
@@ -215,6 +215,48 @@ sub debug {
     }
 }
 
+=head2 access_token($method_name)
+
+SOAP API access token generator
+
+=cut
+
+sub access_token {
+    my ($self, $method) = @_;
+    my $name;
+    if (
+        $method eq 'getAvailableCategories' or
+        $method eq 'getAvailableTimeRanges' or
+        $method eq 'getCounterRanges' or
+        $method eq 'getCounterSections' or
+        $method eq 'getCounterUsage' or
+        $method eq 'getDiskUsage' or
+        $method eq 'getLiveWMAggregate' or
+        $method eq 'getLiveWMCounters' or
+        $method eq 'getNetworkUsage' or
+        $method eq 'getNetworkUsageSections' or
+        $method eq 'getReportData' or
+        $method eq 'getReportSummary' or
+        $method eq 'getStreams'
+    ) {
+        $name = 'soap_access';
+    } elsif ($method eq 'getCurrentTraffic') {
+        $name = 'access_token';
+    } elsif (
+        $method eq 'getAvailableCounters' or
+        $method eq 'getAvailableReports'
+      ) {
+        $name = 'userAccess';
+    } else {
+        die "unknown method name for SOAP RPC: $method";
+    }
+
+    my $access = $self->access;
+    return SOAP::Data->name($name => \SOAP::Data->value(
+        map { SOAP::Data->name($_ => $access->{$_})->type('string'); } keys(%$access)
+    ))->type('types:SOAPAccess');
+}
+
 =head2 error_message
 
 =cut
@@ -266,7 +308,7 @@ sub rpc {
     if ($method eq 'getAccess') {
         $res = $soap->call($methodobj, @args);
     } else {
-        $res = $soap->call($methodobj, $self->access, @args);
+        $res = $soap->call($methodobj, $self->access_token($method), @args);
     }
     if ($res->fault) {
         my $f = $res->fault;
@@ -293,22 +335,35 @@ sub auth {
         return undef;
     }
     my $access = $res->valueof('//getAccessResult');
-    my $accessobj = SOAP::Data->name('userAccess' => \SOAP::Data->value(
-        map { SOAP::Data->name($_ => $access->{$_})->type('string'); } keys(%$access)
-    ))->type('types:SOAPAccess');
-    $self->access( $accessobj );
+    $self->access( $access );
 
     $self->access;
 }
 
-=head2 reports
+=head2 current_traffic()
+
+=cut
+
+sub current_traffic {
+    my $self = shift;
+
+    my $res = $self->rpc('getCurrentTraffic');
+    unless ($res) {
+        carp $self->error_message;
+        return undef;
+    }
+    #TODO return [] if blank ('')
+    $res->valueof( '//getCurrentTrafficResult' );
+}
+
+=head2 reports()
 
 Get reports list and returns as arrayref
 
 =cut
 
 sub reports {
-    my $self = shift;
+    my ($self) = shift;
 
     my $res = $self->rpc('getAvailableReports');
     unless ($res) {
@@ -339,6 +394,25 @@ sub time_ranges {
 
 sub report_data {
 }
+
+=head2 disk_usage($report, $time_range)
+
+Get disk usage information(s)
+
+=cut
+
+sub disk_usage {
+    my ($self, $report, $time_range) = shift;
+
+    my $res = $self->rpc('getDiskUsage', $report, $time_range);
+    unless ($res) {
+        carp $self->error_message;
+        return undef;
+    }
+    #TODO return [] if blank ('')
+    $res->valueof( '//getDiskUsageResult' );
+}
+
 
 
 
