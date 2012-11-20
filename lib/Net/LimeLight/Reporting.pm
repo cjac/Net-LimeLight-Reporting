@@ -250,11 +250,7 @@ sub access_token {
     } else {
         die "unknown method name for SOAP RPC: $method";
     }
-
-    my $access = $self->access;
-    return SOAP::Data->name($name => \SOAP::Data->value(
-        map { SOAP::Data->name($_ => $access->{$_})->type('string'); } keys(%$access)
-    ))->type('types:SOAPAccess');
+    $self->_soap_data($self->access, $name, 'types:SOAPAccess');
 }
 
 =head2 error_message
@@ -290,6 +286,19 @@ sub _soap {
         $soap->on_action(sub { $self->uri . '/' . $args{method} });
     }
     $soap;
+}
+
+=head2 _soap_data
+
+Build named (and typed) SOAP::Data object
+
+=cut
+
+sub _soap_data {
+    my ($self, $obj, $name, $type) = @_;
+    return SOAP::Data->name($name => \SOAP::Data->value(
+        map { SOAP::Data->name($_ => $obj->{$_})->type('string') } keys(%$obj)
+    ))->type($type);
 }
 
 =head2 rpc
@@ -336,8 +345,7 @@ sub auth {
     }
     my $access = $res->valueof('//getAccessResult');
     $self->access( $access );
-
-    $self->access;
+    $self;
 }
 
 =head2 current_traffic()
@@ -358,7 +366,7 @@ sub current_traffic {
 
 =head2 reports()
 
-Get reports list and returns as arrayref
+Get reports list and returns as arrayref of {desc=>'',name=>'',id=>'',key=>''}
 
 =cut
 
@@ -370,108 +378,163 @@ sub reports {
         carp $self->error_message;
         return undef;
     }
-    #TODO return [] if blank ('')
-    $res->valueof( '//getAvailableReportsResult' );
+    my $result = $res->valueof( '//getAvailableReportsResult' );
+    unless ($result and $result->{Item}) {
+        return [];
+    }
+    $result->{Item};
 }
 
 =head2 categories($report)
 
+Get categories of report and returns as arrayref of {desc=>'',name=>'',id=>'',key=>''}
+List of name is assumed as:
+ [
+  'Day','Day of Week','Duration','Errors','File Size','File Type','Geo','Hour','Hour of Day',
+  'Missing Files','Published Hosts','Referer Domains','Status','URL Prefixes','URLs','User Agent',
+ ]
+
 =cut
 
 sub categories {
-}
+    my ($self, $report) = @_;
 
-=head2 time_ranges($report)
-
-=cut
-
-sub time_ranges {
-}
-
-=head2 report_data($report, $category, $time_range, $orderby)
-
-=cut
-
-sub report_data {
-}
-
-=head2 disk_usage($report, $time_range)
-
-Get disk usage information(s)
-
-=cut
-
-sub disk_usage {
-    my ($self, $report, $time_range) = shift;
-
-    my $res = $self->rpc('getDiskUsage', $report, $time_range);
+    my $res = $self->rpc('getAvailableCategories', $self->_soap_data($report, 'report', 'types:SOAPAvailableReport'));
     unless ($res) {
         carp $self->error_message;
         return undef;
     }
-    #TODO return [] if blank ('')
-    $res->valueof( '//getDiskUsageResult' );
+    my $result = $res->valueof( '//getAvailableCategoriesResult' );
+    unless ($result and $result->{Item}) {
+        return [];
+    }
+    $result->{Item};
 }
 
+=head2 category($category_name, $report)
 
+Shortcut method to get a category with specified name from list
 
+=cut
 
-# sub get_all_purge_statuses {
-#     my ($self, $detail) = @_;
+sub category {
+    my ($self, $name, $report) = @_;
+    my $categories = $self->categories($report);
+    unless($categories and scalar(@{$categories}) > 0) {
+        return undef;
+    }
+    my @filtered = grep { $_->{name} eq $name } @$categories;
+    unless(@filtered) {
+        carp "No one category matches $name found";
+        return undef;
+    }
+    if (scalar(@filtered) > 1) {
+        carp "2 or more category object found matches $name:" . scalar(@filtered);
+        return undef;
+    }
+    $filtered[0];
+}
 
-#     my $soap = $self->_soap;
-#     $soap->on_action(sub { $self->uri.'/GetAllPurgeStatuses' });
-#     my $header = $self->_header;
+=head2 time_ranges($report)
 
-#     my $res_details = 'false';
-#     if($detail) {
-#         $res_details = 'true';
-#     }
+Get arrayref of available time ranges like {sum_id=>'',desc=>'',name=>'',type=>'',key=>'',end=>'',start=>''}
+List of name is assumed as: ['monthly','weekly','daily','hourly']
 
-#     my $res = $soap->call(
-#         SOAP::Data->new(
-#             name => 'GetAllPurgeStatuses',
-#             attr => { xmlns => $self->uri },
-#         ) => SOAP::Data->type('string')->name(IncludeDetail => $res_details),
-#         $header
-#     );
-#     if($res->fault) {
-#         die join(', ',
-#             $res->faultcode,
-#             $res->faultstring,
-#             $res->faultdetail
-#         );
-#     }
+'start' and 'end' have unix time (seconds from epoch)
 
-#     # Save me from carpal tunnel
-#     my $env_prefix = '//GetAllPurgeStatusesResponse/GetAllPurgeStatusesResult';
+Timezome of ranges are assumed as MST(-0700), AZ, HQ of limelight
 
-#     my $resp = Net::LimeLight::Purge::StatusResponse->new(
-#         completed_entries => $res->valueof("$env_prefix/CompletedEntries"),
-#         total_entries => $res->valueof("$env_prefix/TotalEntries")
-#     );
+=cut
 
-#     # If we have statuses, put them into the response!
-#     if($res->match("$env_prefix/EntryStatuses/PurgeEntryStatus")) {
-#         foreach my $r ($res->dataof) {
-#             $resp->add_request(
-#                 Net::LimeLight::Purge::Request->new(
-#                     url => $r->value->{Url},
-#                     shortname => $r->value->{Shortname},
-#                     regex => ($r->value->{Regex} eq 'true') ? 1 : 0,
-#                     completed => ($r->value->{Completed} eq 'true') ? 1 : 0,
-#                     batch_number => $r->value->{BatchNumber},
-#                     completed_date => $self->_date_parser->parse_datetime(
-#                         $r->value->{CompletedDate}
-#                     )
-#                 )
-#             );
-#         }
-#     }
+sub time_ranges {
+    my ($self, $report) = @_;
 
+    my $res = $self->rpc('getAvailableTimeRanges', $self->_soap_data($report, 'report', 'types:SOAPAvailableReport'));
+    unless ($res) {
+        carp $self->error_message;
+        return undef;
+    }
+    my $result = $res->valueof( '//getAvailableTimeRangesResult' );
+    unless ($result and $result->{Item}) {
+        return [];
+    }
+    $result->{Item};
+}
 
-#     return $resp;
-# }
+=head2 report_data($report, $category, $time_range, [$orderby])
+
+Get report data
+
+=over 4
+
+=item I<orderby>
+
+Specify order by string, like "$fieldname $direction". Fieldname is one of 'item_name', 'num_bytes', 'num_seconds', 'num_users' and 'num_requests'. Direction is one of 'asc' and 'desc'.
+
+Examples: 'item_name asc', 'num_bytes desc', 'num_requests'.
+
+=cut
+
+sub report_data {
+    my ($self, $report, $category, $time_range, $orderby) = @_;
+
+    my $res = $self->rpc('getAvailableTimeRanges', (
+        $self->_soap_data($report, 'report', 'types:SOAPAvailableReport'),
+        $self->_soap_data($category, 'category', 'types:SOAPAvailableCategory'),
+        $self->_soap_data($time_range, 'timeRange', 'types:SOAPAvailableTimeRange'),
+        SOAP::Data->name('orderBy' => ($orderby || ''))->type('string'),
+    ));
+    unless ($res) {
+        carp $self->error_message;
+        return undef;
+    }
+    my $result = $res->valueof( '//getReportDataResult' );
+    unless ($result and $result->{Item}) {
+        return [];
+    }
+    $result->{Item};
+}
+
+=head2 disk_usage($report, $time_range)
+
+Get disk usage information(s) as {values=>$values,startTime=>'',startTimeEpoch=>'',endTime=>'',endTimeEpoch=>'',interval=>'',nsamples=>''}
+
+$values: arrayref of {type=>'',label=>'',units=>'',samples=>[num]}
+
+=cut
+
+sub disk_usage {
+    my ($self, $report, $time_range) = @_;
+
+    my $res = $self->rpc('getDiskUsage', (
+        $self->_soap_data($report, 'report', 'types:SOAPAvailableReport'),
+        $self->_soap_data($time_range, 'timerange', 'types:SOAPAvailableTimeRange'),
+    ));
+    unless ($res) {
+        carp $self->error_message;
+        return undef;
+    }
+    my $r = $res->valueof( '//getDiskUsageResult' );
+    unless ($r) {
+        return {};
+    }
+    my $data = +{
+        (map { ($_ => $r->{$_}) } qw(startTime startTimeEpoch endTime endTimeEpoch interval nsamples))
+    };
+    if ($r->{variables} and $r->{variables}->{Item}) {
+        my @values = ();
+        foreach my $item (@{$r->{variables}->{Item}}) {
+            push @values, +{
+                type => $item->{type},
+                label => $item->{label},
+                units => $item->{units},
+                samples => ($item->{samples} || {})->{Item},
+            };
+        }
+        $data->{values} = [@values];
+    }
+    $data;
+}
 
 =head1 AUTHOR
 
@@ -493,7 +556,5 @@ This program is free software; you can redistribute it and/or modify it
 under the same terms as Perl itself.
 
 =cut
-
-__PACKAGE__->meta->make_immutable;
 
 1;
