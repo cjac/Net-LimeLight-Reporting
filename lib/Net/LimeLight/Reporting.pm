@@ -4,6 +4,8 @@ use strict;
 use warnings;
 use Carp;
 
+use v5.6.2;
+
 use DateTime::Format::ISO8601;
 use Moose;
 use SOAP::Lite;
@@ -11,6 +13,10 @@ use SOAP::Lite;
 =head1 NAME
 
 Net::LimeLight::Reporting - LimeLight Reporting Service API
+
+=head1 VERSION
+
+Version 0.01
 
 =cut
 

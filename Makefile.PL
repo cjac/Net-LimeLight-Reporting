@@ -11,6 +11,7 @@ requires 'MooseX::AttributeHelpers';
 # requires 'SOAP::Lite'; # 0.715 is broken.... (now includes 0.714 under lib/)
 requires 'LWP::Protocol::https';
 requires 'Crypt::SSLeay';
+requires 'DateTime::Format::ISO8601';
 
 WriteAll;
 
